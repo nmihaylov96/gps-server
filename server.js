@@ -1,5 +1,4 @@
 const express = require("express");
-const fetch = require("node-fetch");
 
 const app = express();
 app.use(express.json());
@@ -11,15 +10,13 @@ app.get("/", (req, res) => {
   res.send("SERVER WORKING");
 });
 
-// ESP ще праща тук:
-// https://gps-server-x1m1.onrender.com/gps?lat=..&lng=..&battery=..
 app.get("/gps", async (req, res) => {
   try {
     const lat = parseFloat(req.query.lat);
     const lng = parseFloat(req.query.lng);
     const battery = parseInt(req.query.battery || "0");
 
-    if (!lat || !lng) {
+    if (isNaN(lat) || isNaN(lng)) {
       return res.status(400).send("INVALID DATA");
     }
 
@@ -27,21 +24,24 @@ app.get("/gps", async (req, res) => {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        lat: lat,
-        lng: lng,
-        battery: battery,
+        lat,
+        lng,
+        battery,
         timestamp: Date.now(),
       }),
     });
 
+    console.log("Firebase updated:", lat, lng);
+
     res.send("OK");
   } catch (err) {
-    console.error(err);
+    console.error("ERROR:", err);
     res.status(500).send("ERROR");
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, () =>
   console.log("Server running on port", PORT)
 );
