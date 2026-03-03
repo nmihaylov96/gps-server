@@ -1,12 +1,12 @@
 {
-  "name": "gps-bridge",
+  "name": "a9g-mqtt-bridge",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "firebase-admin": "^12.3.0"
+    "mqtt": "^5.10.0",
+    "firebase-admin": "^12.5.0"
   }
 }
