@@ -39,16 +39,41 @@ client.on("message", async (topic, message) => {
       updatedAt: Date.now()
     });
 
-    console.log("🔥 Saved to Firebase");
+    console.log("🔥 Saved to Firebase via MQTT");
   } catch (err) {
-    console.error(err);
+    console.error("MQTT Error:", err);
+  }
+});
+
+// ================= HTTP ENDPOINT (FOR A9G) =================
+
+app.post("/gps", async (req, res) => {
+  try {
+    const { lat, lng } = req.body;
+
+    if (lat === undefined || lng === undefined) {
+      return res.status(400).send("Invalid data");
+    }
+
+    await db.ref("trackers/tracker01").set({
+      lat,
+      lng,
+      updatedAt: Date.now()
+    });
+
+    console.log("🔥 Saved to Firebase via HTTP");
+
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("HTTP Error:", err);
+    res.status(500).send("Server error");
   }
 });
 
 // ================= HEALTH CHECK =================
 
 app.get("/", (req, res) => {
-  res.send("MQTT → Firebase bridge running");
+  res.send("GPS → Firebase bridge running");
 });
 
 app.listen(PORT, () => {
