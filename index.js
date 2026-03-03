@@ -1,6 +1,8 @@
 const mqtt = require('mqtt');
 const admin = require('firebase-admin');
 
+// ================= FIREBASE =================
+
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 admin.initializeApp({
@@ -10,28 +12,43 @@ admin.initializeApp({
 
 const db = admin.database();
 
-const client = mqtt.connect('mqtt://test.mosquitto.org:1883');
+// ================= MQTT =================
+
+const client = mqtt.connect('mqtt://test.mosquitto.org:1883', {
+  clean: true,
+  reconnectPeriod: 5000
+});
 
 client.on('connect', () => {
-  console.log('✅ Свързан към MQTT (test.mosquitto.org)');
+  console.log('✅ Свързан към публичния MQTT брокер');
+
   client.subscribe('a9g/tracker01', (err) => {
-    if (!err) console.log('✅ 구독нат a9g/tracker01 – готов да получава GPS');
+    if (err) {
+      console.error('❌ Subscribe грешка:', err);
+    } else {
+      console.log('📡 Абониран за a9g/tracker01');
+    }
   });
 });
 
-client.on('message', (topic, message) => {
+client.on('message', async (topic, message) => {
   try {
     const data = JSON.parse(message.toString());
-    console.log('📍 Получени координати:', data);
-    
-    // Записваме точно където ти искаш
-    db.ref('trackers/tracker01').set(data);
-    console.log('✅ Записано в Firebase /trackers/tracker01');
-  } catch (e) {
-    console.error('Грешка при парсване:', e);
+
+    console.log('📍 Получени данни:', data);
+
+    await db.ref('trackers/tracker01').set({
+      lat: data.lat,
+      lng: data.lng,
+      updatedAt: Date.now()
+    });
+
+    console.log('🔥 Записано във Firebase');
+  } catch (err) {
+    console.error('❌ Грешка при обработка:', err);
   }
 });
 
 client.on('error', (err) => {
-  console.error('MQTT грешка:', err);
+  console.error('MQTT грешка:', err.message);
 });
