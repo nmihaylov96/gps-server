@@ -1,10 +1,18 @@
 const express = require("express");
-const fetch = require("node-fetch");
+const admin = require("firebase-admin");
 
 const app = express();
+app.use(express.json());   // важно – за да чете JSON ако ползваш POST по-късно
 
-const FIREBASE_URL =
-  "https://dogtracker-19213-default-rtdb.europe-west1.firebasedatabase.app";
+// === Инициализация на Admin SDK ===
+const serviceAccount = require("./serviceAccountKey.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: "https://dogtracker-19213-default-rtdb.europe-west1.firebasedatabase.app"
+});
+
+const db = admin.database();
 
 app.get("/", (req, res) => {
   res.send("OK");
@@ -15,19 +23,28 @@ app.get("/gps", async (req, res) => {
     const lat = Number(req.query.lat);
     const lng = Number(req.query.lng);
     const battery = Number(req.query.battery || 0);
+
     if (isNaN(lat) || isNaN(lng)) {
       return res.status(400).send("INVALID");
     }
-    await fetch(`${FIREBASE_URL}/trackers/tracker01.json`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lat, lng, battery, timestamp: Date.now() }),
-    });
+
+    const data = {
+      lat,
+      lng,
+      battery,
+      timestamp: Date.now()
+    };
+
+    await db.ref("trackers/tracker01").set(data);
+
     res.send("OK");
-  } catch {
+  } catch (err) {
+    console.error(err);
     res.status(500).send("ERROR");
   }
 });
 
-const PORT = process.env.PORT || 80;
-app.listen(PORT, () => console.log("OK"));
+const PORT = process.env.PORT || 3000;   // Render предпочита 3000+ вместо 80
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
