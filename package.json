@@ -1,9 +1,12 @@
 {
-  "name": "gps-server",
+  "name": "a9g-firebase-bridge",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
-    "express": "^4.18.2",
-    "node-fetch": "^2.6.7"
+    "mqtt": "^5.7.0",
+    "firebase-admin": "^12.3.0"
   }
 }
