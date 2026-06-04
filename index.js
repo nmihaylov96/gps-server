@@ -4,11 +4,9 @@ const admin   = require("firebase-admin");
 
 const app = express();
 app.use(express.json());
-
 const PORT = process.env.PORT || 3000;
 
-// ================= FIREBASE =================
-
+// ─── FIREBASE ─────────────────────────────────────────
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 admin.initializeApp({
@@ -17,12 +15,12 @@ admin.initializeApp({
 });
 
 const db = admin.database();
+console.log("✅ Firebase connected");
 
-// ================= MQTT =================
-
+// ─── MQTT ─────────────────────────────────────────────
 const client = mqtt.connect("mqtt://test.mosquitto.org:1883", {
   reconnectPeriod: 5000,
-  clientId: "render-bridge-01"   // уникален ID за брокера
+  clientId: "render-bridge-01"
 });
 
 client.on("connect", () => {
@@ -49,7 +47,7 @@ client.on("message", async (topic, message) => {
   }
 
   if (data.lat === undefined || data.lng === undefined) {
-    console.error("❌ Missing lat/lng in payload");
+    console.error("❌ Missing lat/lng");
     return;
   }
 
@@ -57,44 +55,34 @@ client.on("message", async (topic, message) => {
     await db.ref("trackers/tracker01").set({
       lat:       data.lat,
       lng:       data.lng,
-      updatedAt: Date.now()
+      timestamp: Date.now(),
+      battery:   data.battery || 0
     });
-    console.log(`🔥 Firebase updated → lat:${data.lat} lng:${data.lng}`);
+    console.log(`🔥 Firebase → lat:${data.lat} lng:${data.lng}`);
   } catch (err) {
     console.error("Firebase write error:", err);
   }
 });
 
-// ================= HTTP ENDPOINT (резервен) =================
-
+// ─── HTTP РЕЗЕРВЕН ENDPOINT ───────────────────────────
 app.post("/gps", async (req, res) => {
+  const { lat, lng } = req.body;
+  if (lat === undefined || lng === undefined)
+    return res.status(400).json({ error: "Missing lat or lng" });
+
   try {
-    const { lat, lng } = req.body;
-
-    if (lat === undefined || lng === undefined) {
-      return res.status(400).json({ error: "Missing lat or lng" });
-    }
-
     await db.ref("trackers/tracker01").set({
-      lat,
-      lng,
-      updatedAt: Date.now()
+      lat, lng,
+      timestamp: Date.now(),
+      battery: 0
     });
-
-    console.log(`🔥 Firebase updated via HTTP → lat:${lat} lng:${lng}`);
-    res.status(200).json({ ok: true });
+    console.log(`🔥 HTTP → lat:${lat} lng:${lng}`);
+    res.json({ ok: true });
   } catch (err) {
-    console.error("HTTP Error:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ================= HEALTH CHECK =================
+app.get("/", (req, res) => res.send("GPS Bridge running ✅"));
 
-app.get("/", (req, res) => {
-  res.send("GPS → Firebase bridge running ✅");
-});
-
-app.listen(PORT, () => {
-  console.log(`🌍 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🌍 Port ${PORT}`));
