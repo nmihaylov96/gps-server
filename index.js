@@ -8,12 +8,10 @@ const PORT = process.env.PORT || 3000;
 
 // ─── FIREBASE ─────────────────────────────────────────
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-
 admin.initializeApp({
   credential:  admin.credential.cert(serviceAccount),
   databaseURL: "https://dogtracker-19213-default-rtdb.europe-west1.firebasedatabase.app"
 });
-
 const db = admin.database();
 console.log("✅ Firebase connected");
 
@@ -38,27 +36,42 @@ client.on("message", async (topic, message) => {
   const raw = message.toString();
   console.log(`📨 MQTT [${topic}]: ${raw}`);
 
-  let data;
+  let lat, lng;
+
+  // Формат 1: JSON {"lat":42.6,"lng":23.3}
   try {
-    data = JSON.parse(raw);
+    const data = JSON.parse(raw);
+    if (data.lat !== undefined && data.lng !== undefined) {
+      lat = data.lat;
+      lng = data.lng;
+    }
   } catch (e) {
-    console.error("❌ Invalid JSON:", raw);
-    return;
+    // не е JSON, пробваме формат 2
   }
 
-  if (data.lat === undefined || data.lng === undefined) {
-    console.error("❌ Missing lat/lng");
+  // Формат 2: lat:42.636189,lng:23.375729
+  if (lat === undefined) {
+    const latMatch = raw.match(/lat:([\d.\-]+)/);
+    const lngMatch = raw.match(/lng:([\d.\-]+)/);
+    if (latMatch && lngMatch) {
+      lat = parseFloat(latMatch[1]);
+      lng = parseFloat(lngMatch[1]);
+    }
+  }
+
+  if (lat === undefined || lng === undefined) {
+    console.error("❌ Не мога да прочета lat/lng от:", raw);
     return;
   }
 
   try {
     await db.ref("trackers/tracker01").set({
-      lat:       data.lat,
-      lng:       data.lng,
+      lat:       lat,
+      lng:       lng,
       timestamp: Date.now(),
-      battery:   data.battery || 0
+      battery:   0
     });
-    console.log(`🔥 Firebase → lat:${data.lat} lng:${data.lng}`);
+    console.log(`🔥 Firebase → lat:${lat} lng:${lng}`);
   } catch (err) {
     console.error("Firebase write error:", err);
   }
@@ -69,7 +82,6 @@ app.post("/gps", async (req, res) => {
   const { lat, lng } = req.body;
   if (lat === undefined || lng === undefined)
     return res.status(400).json({ error: "Missing lat or lng" });
-
   try {
     await db.ref("trackers/tracker01").set({
       lat, lng,
@@ -84,5 +96,4 @@ app.post("/gps", async (req, res) => {
 });
 
 app.get("/", (req, res) => res.send("GPS Bridge running ✅"));
-
 app.listen(PORT, () => console.log(`🌍 Port ${PORT}`));
