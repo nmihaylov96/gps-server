@@ -6,7 +6,6 @@ const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
-// ─── FIREBASE ─────────────────────────────────────────
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
   credential:  admin.credential.cert(serviceAccount),
@@ -15,14 +14,23 @@ admin.initializeApp({
 const db = admin.database();
 console.log("✅ Firebase connected");
 
-// ─── MQTT ─────────────────────────────────────────────
-const client = mqtt.connect("mqtt://test.mosquitto.org:1883", {
+// ─── MQTT — HiveMQ Cloud ──────────────────────────────
+const HIVEMQ_URL      = process.env.HIVEMQ_URL;      // от Render environment
+const HIVEMQ_USERNAME = process.env.HIVEMQ_USERNAME;  // от Render environment
+const HIVEMQ_PASSWORD = process.env.HIVEMQ_PASSWORD;  // от Render environment
+
+const client = mqtt.connect(HIVEMQ_URL, {
+  username:        HIVEMQ_USERNAME,
+  password:        HIVEMQ_PASSWORD,
   reconnectPeriod: 5000,
-  clientId: "render-bridge-01"
+  clientId:        "render-bridge-01",
+  // HiveMQ изисква TLS
+  protocol:        "mqtts",
+  rejectUnauthorized: true
 });
 
 client.on("connect", () => {
-  console.log("✅ MQTT Connected to test.mosquitto.org");
+  console.log("✅ MQTT Connected to HiveMQ Cloud");
   client.subscribe("a9g/tracker01", (err) => {
     if (err) console.error("Subscribe error:", err);
     else     console.log("📡 Subscribed to a9g/tracker01");
@@ -38,18 +46,14 @@ client.on("message", async (topic, message) => {
 
   let lat, lng;
 
-  // Формат 1: JSON {"lat":42.6,"lng":23.3}
   try {
     const data = JSON.parse(raw);
     if (data.lat !== undefined && data.lng !== undefined) {
       lat = data.lat;
       lng = data.lng;
     }
-  } catch (e) {
-    // не е JSON, пробваме формат 2
-  }
+  } catch (e) {}
 
-  // Формат 2: lat:42.636189,lng:23.375729
   if (lat === undefined) {
     const latMatch = raw.match(/lat:([\d.\-]+)/);
     const lngMatch = raw.match(/lng:([\d.\-]+)/);
@@ -77,7 +81,6 @@ client.on("message", async (topic, message) => {
   }
 });
 
-// ─── HTTP РЕЗЕРВЕН ENDPOINT ───────────────────────────
 app.post("/gps", async (req, res) => {
   const { lat, lng } = req.body;
   if (lat === undefined || lng === undefined)
