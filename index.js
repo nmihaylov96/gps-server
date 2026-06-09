@@ -14,23 +14,13 @@ admin.initializeApp({
 const db = admin.database();
 console.log("✅ Firebase connected");
 
-// ─── MQTT — HiveMQ Cloud ──────────────────────────────
-const HIVEMQ_URL      = process.env.HIVEMQ_URL;      // от Render environment
-const HIVEMQ_USERNAME = process.env.HIVEMQ_USERNAME;  // от Render environment
-const HIVEMQ_PASSWORD = process.env.HIVEMQ_PASSWORD;  // от Render environment
-
-const client = mqtt.connect(HIVEMQ_URL, {
-  username:        HIVEMQ_USERNAME,
-  password:        HIVEMQ_PASSWORD,
+const client = mqtt.connect("mqtt://test.mosquitto.org:1883", {
   reconnectPeriod: 5000,
-  clientId:        "render-bridge-01",
-  // HiveMQ изисква TLS
-  protocol:        "mqtts",
-  rejectUnauthorized: true
+  clientId: "render-bridge-01"
 });
 
 client.on("connect", () => {
-  console.log("✅ MQTT Connected to HiveMQ Cloud");
+  console.log("✅ MQTT Connected to mosquitto");
   client.subscribe("a9g/tracker01", (err) => {
     if (err) console.error("Subscribe error:", err);
     else     console.log("📡 Subscribed to a9g/tracker01");
