@@ -58,13 +58,34 @@ client.on("message", async (topic, message) => {
     return;
   }
 
+  const timestamp = Date.now();
+
   try {
-    await db.ref("trackers/tracker01").set({
+    // Последна позиция
+    await db.ref("trackers/tracker01").update({
       lat:       lat,
       lng:       lng,
-      timestamp: Date.now(),
+      timestamp: timestamp,
       battery:   0
     });
+
+    // История — пази последните 100 точки
+    await db.ref(`trackers/tracker01/history/${timestamp}`).set({
+      lat: lat,
+      lng: lng,
+    });
+
+    // Изтрий стари записи ако има повече от 100
+    const historyRef = db.ref("trackers/tracker01/history");
+    const snapshot = await historyRef.orderByKey().once("value");
+    const keys = Object.keys(snapshot.val() || {});
+    if (keys.length > 100) {
+      const oldKeys = keys.sort().slice(0, keys.length - 100);
+      for (const key of oldKeys) {
+        await db.ref(`trackers/tracker01/history/${key}`).remove();
+      }
+    }
+
     console.log(`🔥 Firebase → lat:${lat} lng:${lng}`);
   } catch (err) {
     console.error("Firebase write error:", err);
@@ -76,11 +97,11 @@ app.post("/gps", async (req, res) => {
   if (lat === undefined || lng === undefined)
     return res.status(400).json({ error: "Missing lat or lng" });
   try {
-    await db.ref("trackers/tracker01").set({
-      lat, lng,
-      timestamp: Date.now(),
-      battery: 0
+    const timestamp = Date.now();
+    await db.ref("trackers/tracker01").update({
+      lat, lng, timestamp, battery: 0
     });
+    await db.ref(`trackers/tracker01/history/${timestamp}`).set({ lat, lng });
     console.log(`🔥 HTTP → lat:${lat} lng:${lng}`);
     res.json({ ok: true });
   } catch (err) {
