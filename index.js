@@ -14,6 +14,43 @@ admin.initializeApp({
 const db = admin.database();
 console.log("✅ Firebase connected");
 
+// ─── GEOFENCE НАСТРОЙКИ ───────────────────────────────
+// Тези се пазят в паметта — после ще ги четем от Firebase
+const geofences = {};  // { uid: { lat, lng, radius, outside } }
+
+// ─── ПОМОЩНА ФУНКЦИЯ: разстояние в метри ─────────────
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) *
+            Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// ─── ИЗПРАТИ PUSH ИЗВЕСТИЕ ────────────────────────────
+async function sendPushNotification(fcmToken, title, body) {
+  try {
+    await admin.messaging().send({
+      token: fcmToken,
+      notification: { title, body },
+      android: {
+        priority: "high",
+        notification: {
+          sound: "default",
+          channelId: "geofence_alerts",
+        },
+      },
+    });
+    console.log("📱 Push известие изпратено!");
+  } catch (err) {
+    console.error("❌ Push грешка:", err.message);
+  }
+}
+
+// ─── MQTT ─────────────────────────────────────────────
 const client = mqtt.connect("mqtt://test.mosquitto.org:1883", {
   reconnectPeriod: 5000,
   clientId: "render-bridge-01"
@@ -62,6 +99,7 @@ client.on("message", async (topic, message) => {
   const uid = "cZihoAQ1oFcvhogwBkgR7JBemAB2";
 
   try {
+    // Запиши позицията
     await db.ref(`users/${uid}/trackers/tracker01`).update({
       lat, lng, timestamp, battery: 0,
       name: "Моето куче"
@@ -71,6 +109,7 @@ client.on("message", async (topic, message) => {
       lat, lng
     });
 
+    // Изтрий стари записи
     const historyRef = db.ref(`users/${uid}/trackers/tracker01/history`);
     const snapshot   = await historyRef.orderByKey().once("value");
     const keys       = Object.keys(snapshot.val() || {});
@@ -78,6 +117,59 @@ client.on("message", async (topic, message) => {
       const oldKeys = keys.sort().slice(0, keys.length - 100);
       for (const key of oldKeys) {
         await db.ref(`users/${uid}/trackers/tracker01/history/${key}`).remove();
+      }
+    }
+
+    // ─── ПРОВЕРИ GEOFENCE ─────────────────────────────
+    const geofenceSnap = await db.ref(`users/${uid}/trackers/tracker01/geofence`).once("value");
+    const geofence = geofenceSnap.val();
+
+    if (geofence && geofence.active) {
+      const distance = calculateDistance(
+        geofence.lat, geofence.lng,
+        lat, lng
+      );
+
+      console.log(`📏 Разстояние от зона: ${Math.round(distance)}м (лимит: ${geofence.radius}м)`);
+
+      if (distance > geofence.radius && !geofence.outside) {
+        // Излязло от зоната — изпрати известие
+        console.log("⚠️ Излязло от зона!");
+
+        // Вземи FCM токена
+        const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
+        const fcmToken  = tokenSnap.val();
+
+        if (fcmToken) {
+          await sendPushNotification(
+            fcmToken,
+            "⚠️ DogTracker Alert!",
+            "Кучето е излязло от зоната!"
+          );
+        }
+
+        // Маркирай като извън зоната
+        await db.ref(`users/${uid}/trackers/tracker01/geofence`).update({
+          outside: true
+        });
+
+      } else if (distance <= geofence.radius && geofence.outside) {
+        // Върнало се в зоната
+        console.log("✅ Върна се в зоната");
+        await db.ref(`users/${uid}/trackers/tracker01/geofence`).update({
+          outside: false
+        });
+
+        const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
+        const fcmToken  = tokenSnap.val();
+
+        if (fcmToken) {
+          await sendPushNotification(
+            fcmToken,
+            "✅ DogTracker",
+            "Кучето се върна в зоната!"
+          );
+        }
       }
     }
 
