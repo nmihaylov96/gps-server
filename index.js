@@ -59,30 +59,25 @@ client.on("message", async (topic, message) => {
   }
 
   const timestamp = Date.now();
+  const uid = "cZihoAQ1oFcvhogwBkgR7JBemAB2";
 
   try {
-    // Последна позиция
-    await db.ref("trackers/tracker01").update({
-      lat:       lat,
-      lng:       lng,
-      timestamp: timestamp,
-      battery:   0
+    await db.ref(`users/${uid}/trackers/tracker01`).update({
+      lat, lng, timestamp, battery: 0,
+      name: "Моето куче"
     });
 
-    // История — пази последните 100 точки
-    await db.ref(`trackers/tracker01/history/${timestamp}`).set({
-      lat: lat,
-      lng: lng,
+    await db.ref(`users/${uid}/trackers/tracker01/history/${timestamp}`).set({
+      lat, lng
     });
 
-    // Изтрий стари записи ако има повече от 100
-    const historyRef = db.ref("trackers/tracker01/history");
-    const snapshot = await historyRef.orderByKey().once("value");
-    const keys = Object.keys(snapshot.val() || {});
+    const historyRef = db.ref(`users/${uid}/trackers/tracker01/history`);
+    const snapshot   = await historyRef.orderByKey().once("value");
+    const keys       = Object.keys(snapshot.val() || {});
     if (keys.length > 100) {
       const oldKeys = keys.sort().slice(0, keys.length - 100);
       for (const key of oldKeys) {
-        await db.ref(`trackers/tracker01/history/${key}`).remove();
+        await db.ref(`users/${uid}/trackers/tracker01/history/${key}`).remove();
       }
     }
 
@@ -98,10 +93,11 @@ app.post("/gps", async (req, res) => {
     return res.status(400).json({ error: "Missing lat or lng" });
   try {
     const timestamp = Date.now();
-    await db.ref("trackers/tracker01").update({
+    const uid = "cZihoAQ1oFcvhogwBkgR7JBemAB2";
+    await db.ref(`users/${uid}/trackers/tracker01`).update({
       lat, lng, timestamp, battery: 0
     });
-    await db.ref(`trackers/tracker01/history/${timestamp}`).set({ lat, lng });
+    await db.ref(`users/${uid}/trackers/tracker01/history/${timestamp}`).set({ lat, lng });
     console.log(`🔥 HTTP → lat:${lat} lng:${lng}`);
     res.json({ ok: true });
   } catch (err) {
