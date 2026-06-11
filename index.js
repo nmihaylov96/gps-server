@@ -14,11 +14,8 @@ admin.initializeApp({
 const db = admin.database();
 console.log("✅ Firebase connected");
 
-// ─── GEOFENCE НАСТРОЙКИ ───────────────────────────────
-// Тези се пазят в паметта — после ще ги четем от Firebase
-const geofences = {};  // { uid: { lat, lng, radius, outside } }
+let lastPosition = null;
 
-// ─── ПОМОЩНА ФУНКЦИЯ: разстояние в метри ─────────────
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -30,7 +27,13 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-// ─── ИЗПРАТИ PUSH ИЗВЕСТИЕ ────────────────────────────
+function calculateSpeed(lat1, lon1, lat2, lon2, timeMs) {
+  const distance = calculateDistance(lat1, lon1, lat2, lon2);
+  const timeHours = timeMs / 3600000;
+  const speedKmh = (distance / 1000) / timeHours;
+  return Math.round(speedKmh * 10) / 10;
+}
+
 async function sendPushNotification(fcmToken, title, body) {
   try {
     await admin.messaging().send({
@@ -41,6 +44,8 @@ async function sendPushNotification(fcmToken, title, body) {
         notification: {
           sound: "default",
           channelId: "geofence_alerts",
+          priority: "max",
+          defaultVibrateTimings: true,
         },
       },
     });
@@ -50,7 +55,6 @@ async function sendPushNotification(fcmToken, title, body) {
   }
 }
 
-// ─── MQTT ─────────────────────────────────────────────
 const client = mqtt.connect("mqtt://test.mosquitto.org:1883", {
   reconnectPeriod: 5000,
   clientId: "render-bridge-01"
@@ -71,22 +75,25 @@ client.on("message", async (topic, message) => {
   const raw = message.toString();
   console.log(`📨 MQTT [${topic}]: ${raw}`);
 
-  let lat, lng;
+  let lat, lng, battery = 0;
 
   try {
     const data = JSON.parse(raw);
     if (data.lat !== undefined && data.lng !== undefined) {
-      lat = data.lat;
-      lng = data.lng;
+      lat     = data.lat;
+      lng     = data.lng;
+      battery = data.battery || 0;
     }
   } catch (e) {}
 
   if (lat === undefined) {
     const latMatch = raw.match(/lat:([\d.\-]+)/);
     const lngMatch = raw.match(/lng:([\d.\-]+)/);
+    const batMatch = raw.match(/bat:(\d+)/);
     if (latMatch && lngMatch) {
-      lat = parseFloat(latMatch[1]);
-      lng = parseFloat(lngMatch[1]);
+      lat     = parseFloat(latMatch[1]);
+      lng     = parseFloat(lngMatch[1]);
+      battery = batMatch ? parseInt(batMatch[1]) : 0;
     }
   }
 
@@ -98,10 +105,22 @@ client.on("message", async (topic, message) => {
   const timestamp = Date.now();
   const uid = "cZihoAQ1oFcvhogwBkgR7JBemAB2";
 
+  // Изчисли скорост
+  let speed = 0;
+  if (lastPosition) {
+    const timeDiff = timestamp - lastPosition.timestamp;
+    if (timeDiff > 0 && timeDiff < 300000) {
+      speed = calculateSpeed(
+        lastPosition.lat, lastPosition.lng,
+        lat, lng, timeDiff
+      );
+    }
+  }
+  lastPosition = { lat, lng, timestamp };
+
   try {
-    // Запиши позицията
     await db.ref(`users/${uid}/trackers/tracker01`).update({
-      lat, lng, timestamp, battery: 0,
+      lat, lng, timestamp, battery, speed,
       name: "Моето куче"
     });
 
@@ -109,7 +128,6 @@ client.on("message", async (topic, message) => {
       lat, lng
     });
 
-    // Изтрий стари записи
     const historyRef = db.ref(`users/${uid}/trackers/tracker01/history`);
     const snapshot   = await historyRef.orderByKey().once("value");
     const keys       = Object.keys(snapshot.val() || {});
@@ -120,74 +138,62 @@ client.on("message", async (topic, message) => {
       }
     }
 
-    // ─── ПРОВЕРИ GEOFENCE ─────────────────────────────
     const geofenceSnap = await db.ref(`users/${uid}/trackers/tracker01/geofence`).once("value");
     const geofence = geofenceSnap.val();
 
     if (geofence && geofence.active) {
       const distance = calculateDistance(
-        geofence.lat, geofence.lng,
-        lat, lng
+        geofence.lat, geofence.lng, lat, lng
       );
-
-      console.log(`📏 Разстояние от зона: ${Math.round(distance)}м (лимит: ${geofence.radius}м)`);
+      console.log(`📏 Разстояние: ${Math.round(distance)}м (лимит: ${geofence.radius}м)`);
 
       if (distance > geofence.radius && !geofence.outside) {
-        // Излязло от зоната — изпрати известие
         console.log("⚠️ Излязло от зона!");
-
-        // Вземи FCM токена
         const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
         const fcmToken  = tokenSnap.val();
-
         if (fcmToken) {
-          await sendPushNotification(
-            fcmToken,
-            "⚠️ DogTracker Alert!",
-            "Кучето е излязло от зоната!"
-          );
+          await sendPushNotification(fcmToken, "⚠️ DogTracker Alert!", "Кучето е излязло от зоната!");
         }
-
-        // Маркирай като извън зоната
-        await db.ref(`users/${uid}/trackers/tracker01/geofence`).update({
-          outside: true
-        });
+        await db.ref(`users/${uid}/trackers/tracker01/geofence`).update({ outside: true });
 
       } else if (distance <= geofence.radius && geofence.outside) {
-        // Върнало се в зоната
         console.log("✅ Върна се в зоната");
-        await db.ref(`users/${uid}/trackers/tracker01/geofence`).update({
-          outside: false
-        });
-
         const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
         const fcmToken  = tokenSnap.val();
-
         if (fcmToken) {
-          await sendPushNotification(
-            fcmToken,
-            "✅ DogTracker",
-            "Кучето се върна в зоната!"
-          );
+          await sendPushNotification(fcmToken, "✅ DogTracker", "Кучето се върна в зоната!");
         }
+        await db.ref(`users/${uid}/trackers/tracker01/geofence`).update({ outside: false });
       }
     }
 
-    console.log(`🔥 Firebase → lat:${lat} lng:${lng}`);
+    if (battery > 0 && battery <= 20) {
+      const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
+      const fcmToken  = tokenSnap.val();
+      if (fcmToken) {
+        await sendPushNotification(
+          fcmToken,
+          "🔋 Ниска батерия!",
+          `Батерията на тракера е ${battery}%. Заредете го скоро!`
+        );
+      }
+    }
+
+    console.log(`🔥 Firebase → lat:${lat} lng:${lng} bat:${battery}% speed:${speed}км/ч`);
   } catch (err) {
     console.error("Firebase write error:", err);
   }
 });
 
 app.post("/gps", async (req, res) => {
-  const { lat, lng } = req.body;
+  const { lat, lng, battery = 0 } = req.body;
   if (lat === undefined || lng === undefined)
     return res.status(400).json({ error: "Missing lat or lng" });
   try {
     const timestamp = Date.now();
     const uid = "cZihoAQ1oFcvhogwBkgR7JBemAB2";
     await db.ref(`users/${uid}/trackers/tracker01`).update({
-      lat, lng, timestamp, battery: 0
+      lat, lng, timestamp, battery, speed: 0
     });
     await db.ref(`users/${uid}/trackers/tracker01/history/${timestamp}`).set({ lat, lng });
     console.log(`🔥 HTTP → lat:${lat} lng:${lng}`);
