@@ -32,7 +32,13 @@ async function sendPushNotification(fcmToken, title, body) {
       notification: { title, body },
       android: {
         priority: "high",
-        notification: { sound: "default", channelId: "geofence_alerts" },
+        notification: {
+          sound: "default",
+          channelId: "geofence_alerts",
+          defaultSound: true,
+          defaultVibrateTimings: true,
+          notificationPriority: "PRIORITY_HIGH",
+        },
       },
     });
     console.log("📱 Push известие изпратено!");
@@ -157,16 +163,53 @@ client.on("message", async (topic, message) => {
 });
 
 app.post("/gps", async (req, res) => {
-  const { lat, lng, serialNumber } = req.body;
+  const { lat, lng, battery, serialNumber } = req.body;
   if (!lat || !lng || !serialNumber)
     return res.status(400).json({ error: "Missing lat, lng or serialNumber" });
   try {
     const trackerSnap = await db.ref(`trackers/${serialNumber}/owner_uid`).once("value");
     const uid = trackerSnap.val();
     if (!uid) return res.status(404).json({ error: "Tracker not found or not paired" });
+
     const timestamp = Date.now();
-    await db.ref(`users/${uid}/trackers/${serialNumber}`).update({ lat, lng, timestamp, battery: 0 });
+    const prevSnap = await db.ref(`users/${uid}/trackers/${serialNumber}`).once("value");
+    const prev = prevSnap.val();
+    let speed = 0;
+    if (prev && prev.lat && prev.lng && prev.timestamp) {
+      const dist = calculateDistance(prev.lat, prev.lng, lat, lng);
+      const timeDiff = (timestamp - prev.timestamp) / 1000;
+      if (timeDiff > 0) speed = (dist / timeDiff) * 3.6;
+    }
+
+    await db.ref(`users/${uid}/trackers/${serialNumber}`).update({
+      lat, lng, timestamp,
+      battery: battery ?? 0,
+      speed,
+      name: prev?.name ?? "Моето куче"
+    });
     await db.ref(`users/${uid}/trackers/${serialNumber}/history/${timestamp}`).set({ lat, lng });
+
+    const geofenceSnap = await db.ref(`users/${uid}/trackers/${serialNumber}/geofence`).once("value");
+    const geofence = geofenceSnap.val();
+    if (geofence && geofence.active) {
+      const distance = calculateDistance(geofence.lat, geofence.lng, lat, lng);
+      console.log(`📏 Разстояние: ${Math.round(distance)}м (лимит: ${geofence.radius}м)`);
+
+      if (distance > geofence.radius && !geofence.outside) {
+        const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
+        const fcmToken  = tokenSnap.val();
+        if (fcmToken) await sendPushNotification(fcmToken, "⚠️ DogTracker Alert!", "Кучето е излязло от зоната!");
+        await db.ref(`users/${uid}/trackers/${serialNumber}/geofence`).update({ outside: true });
+
+      } else if (distance <= geofence.radius && geofence.outside) {
+        const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
+        const fcmToken  = tokenSnap.val();
+        if (fcmToken) await sendPushNotification(fcmToken, "✅ DogTracker", "Кучето се върна в зоната!");
+        await db.ref(`users/${uid}/trackers/${serialNumber}/geofence`).update({ outside: false });
+      }
+    }
+
+    console.log(`🔥 HTTP → ${serialNumber} | lat:${lat} lng:${lng} bat:${battery}%`);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
