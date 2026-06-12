@@ -49,7 +49,72 @@ async function sendPushNotification(fcmToken, title, body) {
   }
 }
 
-// ── Geofence проверка (споделена логика) ──────────────────────────────────────
+// ── Device Info Handler ───────────────────────────────────────────────────────
+// Слуша topic: a9g/{serial}/info
+// Payload: imei:123,iccid:456,operator:A1
+async function handleDeviceInfo(serialNumber, raw) {
+  console.log(`📋 Device info за ${serialNumber}: ${raw}`);
+
+  const imeiMatch     = raw.match(/imei:([^,]+)/);
+  const iccidMatch    = raw.match(/iccid:([^,]+)/);
+  const operatorMatch = raw.match(/operator:([^,]+)/);
+
+  const imei     = imeiMatch     ? imeiMatch[1].trim()     : null;
+  const iccid    = iccidMatch    ? iccidMatch[1].trim()    : null;
+  const operator = operatorMatch ? operatorMatch[1].trim() : null;
+
+  // Запиши само полета, които реално са получени (не "unknown")
+  const updates = {};
+  if (imei     && imei     !== "unknown") updates.imei         = imei;
+  if (iccid    && iccid    !== "unknown") updates.iccid        = iccid;
+  if (operator && operator !== "unknown") updates.sim_provider = operator;
+
+  // Добави лог запис за boot събитие
+  const bootLog = {
+    type:      "boot",
+    timestamp: Date.now(),
+    imei:      imei     || "unknown",
+    iccid:     iccid    || "unknown",
+    operator:  operator || "unknown",
+  };
+
+  try {
+    if (Object.keys(updates).length > 0) {
+      await db.ref(`trackers/${serialNumber}`).update(updates);
+      console.log(`✅ Device info записан за ${serialNumber}:`, updates);
+    }
+
+    // Запиши в device_logs/{serial}/{timestamp}
+    await db.ref(`device_logs/${serialNumber}/${bootLog.timestamp}`).set(bootLog);
+    console.log(`📝 Boot лог записан за ${serialNumber}`);
+  } catch (err) {
+    console.error("❌ Device info write error:", err.message);
+  }
+}
+
+// ── Account History ───────────────────────────────────────────────────────────
+// Записва в trackers/{serial}/account_history при всяко ново сдвояване
+async function logAccountPairing(serialNumber, uid) {
+  try {
+    const existing = await db.ref(`trackers/${serialNumber}/account_history`).once("value");
+    const history  = existing.val() || {};
+
+    // Провери дали този uid вече е логнат като последен
+    const entries  = Object.values(history);
+    const lastEntry = entries.sort((a, b) => b.paired_at - a.paired_at)[0];
+    if (lastEntry && lastEntry.uid === uid) return; // вече логнат
+
+    await db.ref(`trackers/${serialNumber}/account_history/${Date.now()}`).set({
+      uid,
+      paired_at: Date.now(),
+    });
+    console.log(`📋 Account history: ${serialNumber} → ${uid}`);
+  } catch (err) {
+    console.error("❌ Account history error:", err.message);
+  }
+}
+
+// ── Geofence проверка ─────────────────────────────────────────────────────────
 async function checkGeofence(uid, serialNumber, lat, lng) {
   const geofenceSnap = await db.ref(`users/${uid}/trackers/${serialNumber}/geofence`).once("value");
   const geofence = geofenceSnap.val();
@@ -63,6 +128,11 @@ async function checkGeofence(uid, serialNumber, lat, lng) {
     const fcmToken  = tokenSnap.val();
     if (fcmToken) await sendPushNotification(fcmToken, "⚠️ DogTracker Alert!", "Кучето е излязло от зоната!");
     await db.ref(`users/${uid}/trackers/${serialNumber}/geofence`).update({ outside: true });
+
+    // Лог за geofence нарушение
+    await db.ref(`device_logs/${serialNumber}/${Date.now()}`).set({
+      type: "geofence_exit", timestamp: Date.now(), uid,
+    });
   } else if (distance <= geofence.radius && geofence.outside) {
     const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
     const fcmToken  = tokenSnap.val();
@@ -71,7 +141,7 @@ async function checkGeofence(uid, serialNumber, lat, lng) {
   }
 }
 
-// ── История cleanup (споделена логика) ────────────────────────────────────────
+// ── История cleanup ───────────────────────────────────────────────────────────
 async function trimHistory(uid, serialNumber) {
   const historyRef = db.ref(`users/${uid}/trackers/${serialNumber}/history`);
   const snapshot   = await historyRef.orderByKey().once("value");
@@ -84,8 +154,8 @@ async function trimHistory(uid, serialNumber) {
   }
 }
 
-// ── Offline Alert (проверява на всеки 5 минути) ───────────────────────────────
-const OFFLINE_THRESHOLD_MS = 10 * 60 * 1000; // 10 минути
+// ── Offline Alert ─────────────────────────────────────────────────────────────
+const OFFLINE_THRESHOLD_MS = 10 * 60 * 1000;
 
 async function checkOfflineTrackers() {
   console.log("🔍 Проверка за офлайн тракери...");
@@ -105,20 +175,16 @@ async function checkOfflineTrackers() {
       const lastSeen = tracker.lastSeen;
       if (!lastSeen) continue;
 
-      const now       = Date.now();
-      const diffMs    = now - lastSeen;
-      const diffMin   = Math.floor(diffMs / 60000);
-      const isOffline = diffMs > OFFLINE_THRESHOLD_MS;
-
-      // offlineNotified = true означава, че вече сме пратили push за тази офлайн сесия
+      const now             = Date.now();
+      const diffMs          = now - lastSeen;
+      const diffMin         = Math.floor(diffMs / 60000);
+      const isOffline       = diffMs > OFFLINE_THRESHOLD_MS;
       const offlineNotified = tracker.offlineNotified ?? false;
 
       if (isOffline && !offlineNotified) {
         console.log(`📴 ${serialNumber} офлайн от ${diffMin} мин — изпращам push`);
-
         const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
         const fcmToken  = tokenSnap.val();
-
         if (fcmToken) {
           await sendPushNotification(
             fcmToken,
@@ -126,17 +192,20 @@ async function checkOfflineTrackers() {
             `Няма сигнал от ${diffMin} минути. Провери устройството!`
           );
         }
+        await db.ref(`users/${uid}/trackers/${serialNumber}`).update({ offlineNotified: true });
 
-        // Маркирай като нотифициран за да не спамим
-        await db.ref(`users/${uid}/trackers/${serialNumber}`).update({
-          offlineNotified: true
+        // Лог за offline събитие
+        await db.ref(`device_logs/${serialNumber}/${Date.now()}`).set({
+          type: "offline", timestamp: Date.now(), offline_minutes: diffMin, uid,
         });
 
       } else if (!isOffline && offlineNotified) {
-        // Тракерът се върна онлайн — нулирай флага
         console.log(`✅ ${serialNumber} обратно онлайн — нулирам offlineNotified`);
-        await db.ref(`users/${uid}/trackers/${serialNumber}`).update({
-          offlineNotified: false
+        await db.ref(`users/${uid}/trackers/${serialNumber}`).update({ offlineNotified: false });
+
+        // Лог за online събитие
+        await db.ref(`device_logs/${serialNumber}/${Date.now()}`).set({
+          type: "online", timestamp: Date.now(), uid,
         });
       }
     }
@@ -145,9 +214,7 @@ async function checkOfflineTrackers() {
   }
 }
 
-// Стартирай offline check на всеки 5 минути
 setInterval(checkOfflineTrackers, 5 * 60 * 1000);
-// Стартирай веднага при boot
 setTimeout(checkOfflineTrackers, 10000);
 
 // ── MQTT ──────────────────────────────────────────────────────────────────────
@@ -158,24 +225,29 @@ const client = mqtt.connect("mqtt://test.mosquitto.org:1883", {
 
 client.on("connect", () => {
   console.log("✅ MQTT Connected to mosquitto");
-  client.subscribe("a9g/+", (err) => {
-    if (err) console.error("Subscribe error:", err);
-    else     console.log("📡 Subscribed to a9g/+");
-  });
+  // Слушай и GPS и device info topics
+  client.subscribe("a9g/+",      (err) => { if (!err) console.log("📡 Subscribed to a9g/+"); });
+  client.subscribe("a9g/+/info", (err) => { if (!err) console.log("📡 Subscribed to a9g/+/info"); });
 });
 
 client.on("reconnect", () => console.log("🔄 MQTT reconnecting..."));
 client.on("error",     (err) => console.error("MQTT error:", err));
 
 client.on("message", async (topic, message) => {
-  const raw = message.toString();
+  const raw   = message.toString();
+  const parts = topic.split("/");
   console.log(`📨 MQTT [${topic}]: ${raw}`);
 
-  const serialNumber = topic.split("/")[1];
-  if (!serialNumber) {
-    console.error("❌ Не мога да прочета сериен номер от topic:", topic);
+  // a9g/{serial}/info — device info при boot
+  if (parts.length === 3 && parts[2] === "info") {
+    const serialNumber = parts[1];
+    await handleDeviceInfo(serialNumber, raw);
     return;
   }
+
+  // a9g/{serial} — нормален GPS update
+  if (parts.length !== 2) return;
+  const serialNumber = parts[1];
 
   const trackerSnap = await db.ref(`trackers/${serialNumber}/owner_uid`).once("value");
   const uid = trackerSnap.val();
@@ -184,14 +256,15 @@ client.on("message", async (topic, message) => {
     return;
   }
 
+  // Лог pairing history
+  await logAccountPairing(serialNumber, uid);
+
   let lat, lng, battery;
 
   try {
     const data = JSON.parse(raw);
     if (data.lat !== undefined && data.lng !== undefined) {
-      lat     = data.lat;
-      lng     = data.lng;
-      battery = data.bat ?? 0;
+      lat = data.lat; lng = data.lng; battery = data.bat ?? 0;
     }
   } catch (e) {}
 
@@ -226,7 +299,7 @@ client.on("message", async (topic, message) => {
     await db.ref(`users/${uid}/trackers/${serialNumber}`).update({
       lat, lng, timestamp, battery, speed,
       lastSeen: timestamp,
-      offlineNotified: false,          // нулирай при всеки нов сигнал
+      offlineNotified: false,
       name: prev?.name ?? "Моето куче"
     });
 
@@ -250,6 +323,8 @@ app.post("/gps", async (req, res) => {
     const trackerSnap = await db.ref(`trackers/${serialNumber}/owner_uid`).once("value");
     const uid = trackerSnap.val();
     if (!uid) return res.status(404).json({ error: "Tracker not found or not paired" });
+
+    await logAccountPairing(serialNumber, uid);
 
     const timestamp = Date.now();
     const prevSnap  = await db.ref(`users/${uid}/trackers/${serialNumber}`).once("value");
