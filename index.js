@@ -121,6 +121,7 @@ client.on("message", async (topic, message) => {
 
     await db.ref(`users/${uid}/trackers/${serialNumber}`).update({
       lat, lng, timestamp, battery, speed,
+      lastSeen: timestamp,
       name: prev?.name ?? "Моето куче"
     });
 
@@ -147,7 +148,6 @@ client.on("message", async (topic, message) => {
         const fcmToken  = tokenSnap.val();
         if (fcmToken) await sendPushNotification(fcmToken, "⚠️ DogTracker Alert!", "Кучето е излязло от зоната!");
         await db.ref(`users/${uid}/trackers/${serialNumber}/geofence`).update({ outside: true });
-
       } else if (distance <= geofence.radius && geofence.outside) {
         const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
         const fcmToken  = tokenSnap.val();
@@ -185,9 +185,21 @@ app.post("/gps", async (req, res) => {
       lat, lng, timestamp,
       battery: battery ?? 0,
       speed,
+      lastSeen: timestamp,
       name: prev?.name ?? "Моето куче"
     });
+
     await db.ref(`users/${uid}/trackers/${serialNumber}/history/${timestamp}`).set({ lat, lng });
+
+    const historyRef = db.ref(`users/${uid}/trackers/${serialNumber}/history`);
+    const snapshot   = await historyRef.orderByKey().once("value");
+    const keys       = Object.keys(snapshot.val() || {});
+    if (keys.length > 100) {
+      const oldKeys = keys.sort().slice(0, keys.length - 100);
+      for (const key of oldKeys) {
+        await db.ref(`users/${uid}/trackers/${serialNumber}/history/${key}`).remove();
+      }
+    }
 
     const geofenceSnap = await db.ref(`users/${uid}/trackers/${serialNumber}/geofence`).once("value");
     const geofence = geofenceSnap.val();
@@ -200,7 +212,6 @@ app.post("/gps", async (req, res) => {
         const fcmToken  = tokenSnap.val();
         if (fcmToken) await sendPushNotification(fcmToken, "⚠️ DogTracker Alert!", "Кучето е излязло от зоната!");
         await db.ref(`users/${uid}/trackers/${serialNumber}/geofence`).update({ outside: true });
-
       } else if (distance <= geofence.radius && geofence.outside) {
         const tokenSnap = await db.ref(`users/${uid}/fcmToken`).once("value");
         const fcmToken  = tokenSnap.val();
@@ -212,6 +223,7 @@ app.post("/gps", async (req, res) => {
     console.log(`🔥 HTTP → ${serialNumber} | lat:${lat} lng:${lng} bat:${battery}%`);
     res.json({ ok: true });
   } catch (err) {
+    console.error("Firebase write error:", err);
     res.status(500).json({ error: err.message });
   }
 });
